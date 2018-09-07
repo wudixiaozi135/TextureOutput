@@ -1,0 +1,268 @@
+<?xml version="1.0"?>
+<mx:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009" xmlns:mx="library://ns.adobe.com/flex/mx"
+                        xmlns:s="library://ns.adobe.com/flex/spark"
+                        horizontalAlign="left" layout="vertical" width="550" height="300"
+                        addedToStage="addToStageHandler(event)">
+    <fx:Script><![CDATA[
+        import mx.collections.ArrayCollection;
+
+        private var datas:ArrayCollection;
+
+        private var configMap:Dictionary = new Dictionary();
+
+        private var preloadFiles:Array;
+
+        private var configArr:Array;
+
+        private var timer:Timer;
+        private var delay:Number = 20;
+
+        private var waitHandlers:Array;
+
+        private var running:Boolean;
+
+        private var startGC:Boolean;
+
+        private function onTimerHandler(ev:TimerEvent):void
+        {
+            if ((this.running = (this.waitHandlers && this.waitHandlers.length > 0)))
+            {
+                var handler:Object = this.waitHandlers.pop();
+                if (handler)
+                {
+                    var method:Function = handler.method;
+                    var args:Array = handler.args;
+                    if (method != null && args)
+                    {
+                        method.apply(this, args);
+                        this.status = "正在输出：" + args.pop();
+                        this.startBtn.enabled = false;
+                    }
+                    this.startGC = true;
+                }
+            } else
+            {
+                this.startBtn.enabled = true;
+                this.status = "就绪";
+                this.startGC && this.gc();
+            }
+        }
+
+        /**垃圾回收*/
+        private function gc():void
+        {
+            this.startGC = false;
+            if (this.datas)
+            {
+                this.datas.removeAll();
+                this.datas.refresh();
+            }
+
+            if (this.configMap)
+            {
+                var data:Object;
+                for (var key:String in this.configMap)
+                {
+                    data = this.configMap[key];
+                    if (data.bitmap && data.bitmap.bitmapData)
+                    {
+                        data.bitmap.bitmapData.dispose();
+                    }
+                    delete this.configMap[key];
+                }
+                this.configMap = new Dictionary();
+            }
+            this.preloadFiles = new Array();
+            this.configArr = new Array();
+            this.waitHandlers = new Array();
+        }
+
+        private function startClick():void
+        {
+            if (this.configMap)
+            {
+                this.configArr = new Array();
+                this.waitHandlers = new Array();
+
+                for each(var data:Object in this.configMap)
+                {
+                    this.configArr.push(data);
+                }
+                this.handlerOutputImg();
+            }
+        }
+
+        /**输出img*/
+        private function handlerOutputImg():void
+        {
+            outputNextImg();
+        }
+
+        private function outputNextImg():void
+        {
+            if (this.configArr && this.configArr.length > 0)
+            {
+                var data:Object = this.configArr.pop();
+                var sourceData:BitmapData = data.bitmap.bitmapData;
+                var cfg:Object = data.config;
+                var filePath:String = data.filePath;
+                if (sourceData && cfg)
+                {
+                    var tempPath:String = filePath + File.separator + cfg.file.split(".")[0];
+                    if (!tempPath) return;
+
+                    var file:File = File.applicationDirectory.resolvePath(tempPath);
+                    if (!file.exists)
+                    {
+                        file.createDirectory();
+                    }
+
+                    for (var key:String in cfg.frames)
+                    {
+                        var handler:Object = {};
+                        handler.method = cutPicture;
+                        handler.args = [sourceData, cfg.frames[key], tempPath + File.separator + key + ".png"];
+                        this.waitHandlers.push(handler);
+                    }
+
+                    this.outputNextImg();
+                }
+            }
+        }
+
+        /**切图*/
+        private function cutPicture(bmd:BitmapData, cfg:Object, outputPath:String):void
+        {
+            if (!bmd || !cfg) return;
+            var rect:Rectangle = new Rectangle(cfg.x, cfg.y, cfg.w, cfg.h);
+
+            var bytes:ByteArray = new ByteArray();
+            var option:PNGEncoderOptions = new PNGEncoderOptions();
+            bmd.encode(rect, option, bytes);
+
+            var fs:FileStream = new FileStream();
+            fs.open(new File(outputPath), FileMode.WRITE);
+            fs.writeBytes(bytes);
+            fs.close();
+        }
+
+        private function addToStageHandler(event:Event):void
+        {
+            this.stage.align = StageAlign.TOP_LEFT;
+            this.stage.scaleMode = StageScaleMode.NO_SCALE;
+            this.statusBar.setStyle("textAlign", "right");
+
+            this.datas = new ArrayCollection([]);
+            this.list.dataProvider = this.datas;
+
+            this.timer = new Timer(delay);
+            this.timer.addEventListener(TimerEvent.TIMER, onTimerHandler);
+            this.timer.start();
+        }
+
+        private function nativeDragDrop(event:NativeDragEvent):void
+        {
+            var formats:Array = event.clipboard.formats;
+            if (formats[0] == ClipboardFormats.FILE_LIST_FORMAT)
+            {
+                this.datas.removeAll();
+                this.preloadFiles = new Array();
+                this.configMap = new Dictionary();
+
+                var files:Array = event.clipboard.getData(ClipboardFormats.FILE_LIST_FORMAT) as Array;
+                for each (var file:File in files)
+                {
+                    if (file.isDirectory) continue;
+
+                    var info:Object = {};
+                    info.file = file;
+                    info.fileName = file.name;
+                    info.filePath = file.nativePath;
+                    this.datas.source.push(info);
+                    preloadFiles.push(file);
+                }
+                this.datas.refresh();
+
+                loadFiles();
+            }
+        }
+
+        private function loadFiles():void
+        {
+            this.loadNext();
+        }
+
+        private function loadNext():void
+        {
+            if (this.preloadFiles && this.preloadFiles.length > 0)
+            {
+                var file:File = this.preloadFiles.pop();
+                file.addEventListener(Event.COMPLETE, function (ev:Event):void {
+                    var target:File = ev.target as File;
+                    var key:String = target.name.split(".")[0];
+                    configMap[key] ||= {};
+                    configMap[key].filePath = target.parent.nativePath;
+
+                    target.removeEventListener(Event.COMPLETE, arguments.callee);
+                    //加载好数据
+                    if (target.extension == "json")
+                    {
+                        var config:Object = JSON.parse(new String(target.data));
+                        configMap[key].config = config;
+                        loadFiles();
+                    } else
+                    {
+                        var load:Loader = new Loader();
+                        load.contentLoaderInfo.addEventListener(Event.COMPLETE, function (e:Event):void {
+                            e.target.removeEventListener(Event.COMPLETE, arguments.callee);
+                            configMap[key].bitmap = e.target.content;
+                            loadFiles();
+                        });
+                        load.loadBytes(target.data);
+                    }
+                });
+                file.load();
+            }
+        }
+
+        private function nativeDragEnter(event:NativeDragEvent):void
+        {
+            if (this.running) return;
+
+            var formats:Array = event.clipboard.formats;
+            if (formats[0] == ClipboardFormats.FILE_LIST_FORMAT)
+            {
+                NativeDragManager.acceptDragDrop(this.list);
+            }
+        }
+
+        private function getLabel(data:Object):String
+        {
+            if (data)
+            {
+                return data.fileName + " " + data.filePath;
+            }
+            return null;
+        }
+        ]]></fx:Script>
+
+
+    <mx:VBox width="100%" height="100%" horizontalAlign="left">
+
+        <mx:List id="list" labelFunction="getLabel" width="100%" selectable="false"
+                 nativeDragDrop="nativeDragDrop(event)"
+                 nativeDragEnter="nativeDragEnter(event)">
+        </mx:List>
+
+
+        <s:Group width="100%">
+            <mx:Button id="startBtn" right="0" label="执行" click="startClick()"></mx:Button>
+        </s:Group>
+
+    </mx:VBox>
+
+    <s:Group includeInLayout="false" enabled="false">
+        <mx:Label enabled="false" fontSize="30" top="-180" left="150"
+                  text="拖文件至此"></mx:Label>
+    </s:Group>
+</mx:WindowedApplication>
